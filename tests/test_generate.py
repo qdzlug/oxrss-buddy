@@ -75,17 +75,29 @@ class TestGenerateConfig(unittest.TestCase):
 
     @patch("questionary.text")
     @patch("questionary.confirm")
-    def test_invalid_sled_range(self, mock_confirm, mock_text):
+    def test_sled_range_recovers(self, mock_confirm, mock_text):
+        print("\n--- test_sled_range_recovers ---")
         mock_text().ask.side_effect = [
-            "oxide.invalid", "10.0.0.20", "3.3.3.3",
-            "10.0.0.200-10.0.0.210", "10.0.0.205",
-            "10.0.0.2", "10.0.0.10",
-            "1-33", "-"
+            "oxide.invalid",  # zone
+            "10.0.0.20",  # external DNS
+            "3.3.3.3",  # NTP
+            "10.0.0.200-10.0.0.210",  # internal IP range
+            "10.0.0.205",  # internal DNS
+            "10.0.0.2",  # infra_ip_first
+            "10.0.0.10",  # infra_ip_last
+            "1-33",  # ❌ invalid sled input (should retry)
+            "1-2",  # ✅ valid sled input
+            "-"  # output
         ]
-        mock_confirm().ask.side_effect = [False, True, False, False]
+        mock_confirm().ask.side_effect = [
+            False,  # no extra internal IP range
+            True,  # allow any source IP
+            False,  # no BGP
+            False  # no switch port
+        ]
 
-        with self.assertRaises(SystemExit):
-            generate_config()
+        result = generate_config()
+        assert result["bootstrap_sleds"] == [1, 2], "Expected sleds to be parsed after retry"
 
     @patch("questionary.text")
     @patch("questionary.confirm")
@@ -107,16 +119,34 @@ class TestGenerateConfig(unittest.TestCase):
     @patch("questionary.text")
     @patch("questionary.confirm")
     def test_generate_bgp_with_invalid_asn(self, mock_confirm, mock_text):
+        print("\n--- test_generate_bgp_with_invalid_asn ---")
         mock_text().ask.side_effect = [
-            "zone.invalid", "8.8.8.8", "1.2.3.4",
-            "192.168.1.0/28", "192.168.1.5",
-            "10.0.0.10", "10.0.0.30",
-            "0"
+            "zone.invalid",  # DNS zone
+            "8.8.8.8",  # External DNS
+            "1.2.3.4",  # NTP
+            "192.168.1.0/28",  # IP range
+            "192.168.1.5",  # Internal DNS
+            "10.0.0.10",  # infra first
+            "10.0.0.30",  # infra last
+            "1-2",  # sleds
+            "0",  # ❌ invalid ASN
+            "65001",  # ✅ valid ASN on retry
+            "10.5.0.0/24",  # BGP prefix
+            "-"  # output
         ]
-        mock_confirm().ask.side_effect = [False, True, True]
+        mock_confirm().ask.side_effect = [
+            False,  # no extra range
+            True,  # allow any
+            True,  # add bgp
+            True,  # add bgp
+            False,  # no switch port
+            False,  # no switch port
+        ]
 
-        with self.assertRaises(SystemExit):
-            generate_config()
+        result = generate_config()
+        bgp = result["rack_network_config"]["bgp"]
+        self.assertEqual(bgp[0]["asn"], 65001)
+        self.assertIn("10.5.0.0/24", bgp[0]["originate"])
 
     @patch("questionary.text")
     @patch("questionary.confirm")
