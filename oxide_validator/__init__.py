@@ -143,71 +143,84 @@ def semantic_validation(data: dict, verbose: bool = False) -> bool:
 
     return valid
 
-def summarize_config(data: dict):
-    from ipaddress import summarize_address_range
-
-    def join_or_none(items):
-        return ", ".join(items) if items else "[none]"
-
-    def validate_cidrs(addresses):
-        valid = []
-        invalid = []
-        for addr in addresses:
-            try:
-                ip_network(addr, strict=False)
-                valid.append(addr)
-            except ValueError:
-                invalid.append(addr)
-        return valid, invalid
+def summarize_config(data):
+    from ipaddress import ip_address, ip_network
 
     print("╭──────────────────────────────────────────────╮")
     print("│     Oxide Rack Configuration Summary         │")
     print("╰──────────────────────────────────────────────╯")
 
-    print(f"Delegated DNS zone     : {data.get('external_dns_zone_name', '[missing]')}")
-    print(f"External DNS IPs       : {join_or_none(data.get('external_dns_ips', []))}")
-    print(f"Upstream DNS Servers   : {join_or_none(data.get('dns_servers', []))}")
-    print(f"NTP Servers            : {join_or_none(data.get('ntp_servers', []))}")
+    def join_or_dash(values):
+        return ", ".join(values) if values else "<not set>"
+
+    print(f"Delegated DNS zone     : {data.get('external_dns_zone_name', '<missing>')}")
+    print(f"External DNS IPs       : {join_or_dash(data.get('external_dns_ips', []))}")
+    print(f"Upstream DNS Servers   : {join_or_dash(data.get('dns_servers', []))}")
+    print(f"NTP Servers            : {join_or_dash(data.get('ntp_servers', []))}")
 
     sleds = data.get("bootstrap_sleds", [])
     print(f"Bootstrap sleds        : {len(sleds)} defined")
 
-    ip_ranges = data.get("internal_services_ip_pool_ranges", [])
-    print(f"Internal IP pool ranges: {len(ip_ranges)} defined")
-    for idx, r in enumerate(ip_ranges):
-        first = ip_address(r['first'])
-        last = ip_address(r['last'])
-        cidrs = list(summarize_address_range(first, last))
-        cidr_list = ", ".join(str(c) for c in cidrs)
-        total_ips = int(last) - int(first) + 1
-        print(f"              - Range {idx + 1}: {r['first']} - {r['last']} (CIDR(s): {cidr_list}) [{total_ips} IPs]")
-    print(f"Total usable IPs       : {ip_pool_capacity(ip_ranges)}")
+    pools = data.get("internal_services_ip_pool_ranges", [])
+    print(f"Internal IP pool ranges: {len(pools)} defined")
 
-    network = data.get("rack_network_config", {})
-    print("\n── Switch Port Configuration ───────────────")
-    for sw in ("switch0", "switch1"):
-        switch = network.get(sw, {})
-        if isinstance(switch, dict):
-            ports = {k: v for k, v in switch.items() if isinstance(v, dict)}
-            if ports:
-                print(f"  {sw}:")
-                for port, cfg in ports.items():
-                    addresses = cfg.get("addresses", [])
-                    speed = cfg.get("uplink_port_speed") or "<not set>"
-                    valid, invalid = validate_cidrs(addresses)
-                    if valid:
-                        print(f"    - Port {port}: {', '.join(valid)}, speed: {speed}")
-                    if invalid:
-                        print(f"      ⚠ Invalid CIDRs: {', '.join(invalid)}")
+    total_ips = 0
+    for idx, r in enumerate(pools):
+        try:
+            net = ip_network(f"{r['first']}/{ip_address(r['first']).max_prefixlen}", strict=False)
+            end = ip_address(r["last"])
+            first = ip_address(r["first"])
+            count = int(end) - int(first) + 1
+        except Exception:
+            count = 0
+        print(f"              - Range {idx+1}: {r['first']} - {r['last']} [~{count} IPs]")
+        total_ips += count
+    print(f"Total usable IPs       : {total_ips}\n")
 
-    bgp_list = network.get("bgp", [])
+    print("── Switch Port Configuration ───────────────")
+    for sw_name, ports in data.get("rack_network_config", {}).items():
+        if not sw_name.startswith("switch"):
+            continue
+        print(f"  {sw_name}:")
+        for port_name, port_cfg in ports.items():
+
+            addresses = []
+            # Normalize addresses to list of strings
+            if isinstance(port_cfg, dict):
+                raw = port_cfg.get("addresses") or port_cfg.get("address")
+                if isinstance(raw, str):
+                    addresses = [raw]
+                elif isinstance(raw, list):
+                    addresses = [str(x) if isinstance(x, str) else x.get("address", "") for x in raw]
+                elif isinstance(raw, dict):
+                    addresses = [raw.get("address", "")]
+
+            speed = port_cfg.get("uplink_port_speed", "<not set>")
+            if addresses:
+                print(f"    - Port {port_name}: {', '.join(addresses)}, speed: {speed}")
+            else:
+                print(f"    - Port {port_name}: ⚠ No valid address")
+
+            # Flag invalid CIDRs
+            invalid = []
+            for a in addresses:
+                try:
+                    ip_network(a, strict=False)
+                except Exception:
+                    invalid.append(str(a))
+            if invalid:
+                print(f"      ⚠ Invalid CIDRs: {', '.join(str(i) for i in invalid)}")
+
     print("\n── BGP Configuration ───────────────────────")
-    if not bgp_list:
+    bgp = data.get("rack_network_config", {}).get("bgp", [])
+    if not bgp:
         print("  Not using BGP.")
     else:
-        print(f"  Using BGP with {len(bgp_list)} configuration(s):")
-        for idx, bgp in enumerate(bgp_list):
-            print(f"    - Entry {idx + 1}: ASN {bgp.get('asn', '[missing]')}, Prefixes: {join_or_none(bgp.get('originate', []))}")
+        print(f"  Using BGP with {len(bgp)} configuration(s):")
+        for idx, entry in enumerate(bgp):
+            print(f"    - Entry {idx+1}: ASN {entry.get('asn')}, Prefixes: {join_or_dash(entry.get('originate', []))}")
+
+
 
 def main():
     """Command-line interface for TOML rack configuration inspection and operations."""
