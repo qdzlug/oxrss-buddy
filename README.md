@@ -1,2 +1,1 @@
-# oxrss-buddy
-<img width="860" height="859" alt="image" src="https://github.com/user-attachments/assets/0f43c858-8f8e-4102-b27c-f600f8b80095" />
+<img width="1024" height="1536" alt="image" src="https://github.com/user-attachments/assets/d1bdd88c-acfd-4172-8169-712ab54f89c6" />
